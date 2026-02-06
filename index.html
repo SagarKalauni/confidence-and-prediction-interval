@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSCI 356000 | Confidence & Prediction Intervals</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+:root {
+    --lu-gold: #b3a369;
+    --lu-black: #000000;
+    --ci-green: #2ecc71;
+    --pi-black: #000000;
+}
+body { font-family: system-ui; background: #f8f9fa; margin: 0; padding: 20px; }
+.container { max-width: 1100px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 25px rgba(0,0,0,0.1); }
+header { border-bottom: 4px solid var(--lu-gold); padding-bottom: 15px; margin-bottom: 20px; }
+h1 { margin: 0; color: #333; }
+h2 { color: #555; margin-top: 30px; }
+#chart-container { display: flex; flex-direction: column; align-items: center; margin-top: 20px; }
+#chart { margin: 20px 0; }
+.legend { display: flex; gap: 20px; margin-top: 15px; font-size: 0.9rem; flex-wrap: wrap; }
+.legend span { display: flex; align-items: center; gap: 6px; margin: 5px; }
+.box { width: 18px; height: 6px; display: inline-block; }
+.ci { background: var(--ci-green); }
+.pi { background: var(--pi-black); }
+.mean { background: steelblue; }
+.controls { margin: 20px 0; display: flex; gap: 10px; flex-wrap: wrap; }
+button { padding: 10px 20px; background: var(--lu-gold); color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+button:hover { background: #a59459; }
+button:disabled { background: #ccc; cursor: not-allowed; }
+#calculation { background: #f5f5f5; padding: 15px; border-radius: 8px; margin-top: 20px; font-family: monospace; white-space: pre-wrap; line-height: 1.4; }
+#explanation { margin-top: 20px; padding: 15px; background: #e8f4fc; border-radius: 8px; }
+.formula { background: #f8f8f8; padding: 10px; border-left: 4px solid var(--lu-gold); margin: 10px 0; font-family: monospace; }
+.key-difference { background: #fff3cd; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #ffc107; }
+.point-info { position: absolute; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); border: 1px solid #ddd; display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+    <h1>Confidence Interval vs Prediction Interval</h1>
+    <p>Click to add data points or use the buttons below. Watch the intervals update in real-time.</p>
+</header>
+
+<div class="controls">
+    <button onclick="addRandomPoint()">Add Random Point</button>
+    <button onclick="addLinearPoints()">Add Linear Pattern (10 points)</button>
+    <button onclick="addNoisyPoints()">Add Noisy Pattern (10 points)</button>
+    <button onclick="clearAll()">Clear All Points</button>
+</div>
+
+<div id="chart-container">
+    <div id="chart"></div>
+    <div class="legend">
+        <span><span class="box mean"></span> Regression Line (Mean)</span>
+        <span><span class="box ci"></span> 95% Confidence Interval</span>
+        <span><span class="box pi"></span> 95% Prediction Interval</span>
+        <span><span style="color: red; font-weight: bold;">●</span> Data Points</span>
+    </div>
+</div>
+
+<div id="explanation">
+    <h2>Understanding the Difference</h2>
+    <div class="key-difference">
+        <strong>Key Difference:</strong> Prediction intervals are ALWAYS wider than confidence intervals because they account for both:
+        <ol>
+            <li>Uncertainty in estimating the mean (same as confidence interval)</li>
+            <li>Additional uncertainty about individual observations</li>
+        </ol>
+    </div>
+    
+    <h3>Confidence Interval Formula:</h3>
+    <div class="formula">
+        CI: ŷ ± t<sub>α/2</sub> × s × √(1/n + (x - x̄)²/SS<sub>x</sub>)
+    </div>
+    <p>Shows where the TRUE MEAN RESPONSE is likely to be for a given x-value.</p>
+    
+    <h3>Prediction Interval Formula:</h3>
+    <div class="formula">
+        PI: ŷ ± t<sub>α/2</sub> × s × √(1 + 1/n + (x - x̄)²/SS<sub>x</sub>)
+    </div>
+    <p>Shows where an INDIVIDUAL OBSERVATION is likely to be for a given x-value.</p>
+    
+    <p>Notice the extra "1" inside the square root for prediction intervals!</p>
+</div>
+
+<div id="calculation">
+    <h3>Live Calculation Display</h3>
+    <div id="calc-output">Add at least 2 points to see calculations...</div>
+</div>
+
+</div>
+
+<script>
+const margin = {top: 40, right: 40, bottom: 60, left: 70};
+const width = 800;
+const height = 500;
+const innerWidth = width - margin.left - margin.right;
+const innerHeight = height - margin.top - margin.bottom;
+
+let data = [];
+let regressionLine = null;
+let ciArea = null;
+let piArea = null;
+let pointsGroup = null;
+let tooltip = null;
+
+// Initialize SVG
+const svg = d3.select("#chart").append("svg")
+    .attr("width", width)
+    .attr("height", height)
+    .style("border", "1px solid #ddd")
+    .style("background", "#fafafa");
+
+const g = svg.append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+// Scales
+const x = d3.scaleLinear()
+    .domain([0, 20])
+    .range([0, innerWidth]);
+
+const y = d3.scaleLinear()
+    .domain([0, 200])
+    .range([innerHeight, 0]);
+
+// Axes
+g.append("g")
+    .attr("transform", `translate(0,${innerHeight})`)
+    .call(d3.axisBottom(x))
+    .append("text")
+    .attr("x", innerWidth / 2)
+    .attr("y", 40)
+    .attr("fill", "black")
+    .style("text-anchor", "middle")
+    .text("X Variable");
+
+g.append("g")
+    .call(d3.axisLeft(y))
+    .append("text")
+    .attr("transform", "rotate(-90)")
+    .attr("x", -innerHeight / 2)
+    .attr("y", -50)
+    .attr("fill", "black")
+    .style("text-anchor", "middle")
+    .text("Y Variable");
+
+// Grid lines
+g.append("g")
+    .attr("class", "grid")
+    .attr("transform", `translate(0,${innerHeight})`)
+    .call(d3.axisBottom(x).tickSize(-innerHeight).tickFormat(""));
+
+g.append("g")
+    .attr("class", "grid")
+    .call(d3.axisLeft(y).tickSize(-innerWidth).tickFormat(""));
+
+// Tooltip
+tooltip = d3.select("body").append("div")
+    .attr("class", "point-info")
+    .style("position", "absolute")
+    .style("z-index", "10");
+
+// Add initial instructions
+g.append("text")
+    .attr("x", innerWidth / 2)
+    .attr("y", innerHeight / 2)
+    .attr("text-anchor", "middle")
+    .attr("fill", "#666")
+    .text("Click on the chart or use buttons to add points");
+
+// Click handler
+svg.on("click", function(event) {
+    const [mx, my] = d3.pointer(event);
+    
+    // Check if click is within the chart area
+    if (mx > margin.left && mx < width - margin.right && 
+        my > margin.top && my < height - margin.bottom) {
+        
+        const xVal = x.invert(mx - margin.left);
+        const yVal = y.invert(my - margin.top);
+        
+        addPoint(xVal, yVal);
+    }
+});
+
+function addPoint(xVal, yVal) {
+    const newPoint = { x: xVal, y: yVal, id: Date.now() + Math.random() };
+    data.push(newPoint);
+    
+    // Add point to visualization
+    if (!pointsGroup) {
+        pointsGroup = g.append("g").attr("class", "points");
+    }
+    
+    pointsGroup.append("circle")
+        .datum(newPoint)
+        .attr("cx", x(xVal))
+        .attr("cy", y(yVal))
+        .attr("r", 0)
+        .attr("fill", "red")
+        .attr("stroke", "darkred")
+        .attr("stroke-width", 1.5)
+        .on("mouseover", showTooltip)
+        .on("mouseout", hideTooltip)
+        .transition()
+        .duration(500)
+        .attr("r", 6);
+    
+    updateCalculations();
+}
+
+function showTooltip(event, d) {
+    tooltip
+        .style("display", "block")
+        .html(`Point ${data.indexOf(d) + 1}<br/>x = ${d.x.toFixed(2)}<br/>y = ${d.y.toFixed(2)}`)
+        .style("left", (event.pageX + 10) + "px")
+        .style("top", (event.pageY - 10) + "px");
+}
+
+function hideTooltip() {
+    tooltip.style("display", "none");
+}
+
+function updateCalculations() {
+    const calcOutput = d3.select("#calc-output");
+    
+    if (data.length < 2) {
+        calcOutput.html(`Need at least 2 points for regression. Current: ${data.length} point${data.length !== 1 ? 's' : ''}`);
+        removeExistingLines();
+        return;
+    }
+    
+    // Calculate regression statistics
+    const n = data.length;
+    const xBar = d3.mean(data, d => d.x);
+    const yBar = d3.mean(data, d => d.y);
+    
+    let Sxy = 0; // Sum of (x - x̄)(y - ȳ)
+    let Sxx = 0; // Sum of (x - x̄)²
+    let Syy = 0; // Sum of (y - ȳ)²
+    
+    data.forEach(d => {
+        const xDiff = d.x - xBar;
+        const yDiff = d.y - yBar;
+        Sxy += xDiff * yDiff;
+        Sxx += xDiff * xDiff;
+        Syy += yDiff * yDiff;
+    });
+    
+    const b1 = Sxy / Sxx; // Slope
+    const b0 = yBar - b1 * xBar; // Intercept
+    
+    // Calculate residuals and standard error
+    const residuals = data.map(d => d.y - (b0 + b1 * d.x));
+    const SSE = d3.sum(residuals.map(r => r * r)); // Sum of squared errors
+    const s = Math.sqrt(SSE / (n - 2)); // Residual standard error
+    const se_b1 = s / Math.sqrt(Sxx); // Standard error of slope
+    
+    // R-squared
+    const rSquared = 1 - (SSE / Syy);
+    
+    // Display calculations
+    calcOutput.html(`
+=== REGRESSION CALCULATIONS ===
+Number of points: ${n}
+Mean of x (x̄): ${xBar.toFixed(2)}
+Mean of y (ȳ): ${yBar.toFixed(2)}
+
+Sum of Squares:
+Sxx = Σ(x - x̄)² = ${Sxx.toFixed(2)}
+Syy = Σ(y - ȳ)² = ${Syy.toFixed(2)}
+Sxy = Σ(x - x̄)(y - ȳ) = ${Sxy.toFixed(2)}
+
+Regression Coefficients:
+Slope (b₁) = Sxy / Sxx = ${b1.toFixed(4)}
+Intercept (b₀) = ȳ - b₁ × x̄ = ${b0.toFixed(4)}
+
+Equation: ŷ = ${b0.toFixed(2)} + ${b1.toFixed(2)} × x
+
+Residual Analysis:
+Sum of Squared Errors (SSE) = ${SSE.toFixed(2)}
+Residual Standard Error (s) = √(SSE/(n-2)) = ${s.toFixed(2)}
+
+Goodness of Fit:
+R² = 1 - (SSE/Syy) = ${rSquared.toFixed(4)} (${(rSquared * 100).toFixed(1)}%)
+
+=== INTERVAL FORMULAS ===
+For a given x:
+Predicted value: ŷ = ${b0.toFixed(2)} + ${b0 > 0 ? '+' : ''}${b1.toFixed(2)} × x
+
+Confidence Interval (95%):
+ŷ ± 1.96 × ${s.toFixed(2)} × √(1/${n} + (x - ${xBar.toFixed(2)})²/${Sxx.toFixed(2)})
+
+Prediction Interval (95%):
+ŷ ± 1.96 × ${s.toFixed(2)} × √(1 + 1/${n} + (x - ${xBar.toFixed(2)})²/${Sxx.toFixed(2)})
+
+Notice: Prediction interval has an extra "+1" inside the square root!
+    `);
+    
+    // Update visualization
+    drawRegressionLine(b0, b1, s, xBar, Sxx, n);
+}
+
+function drawRegressionLine(b0, b1, s, xBar, Sxx, n) {
+    // Generate x values for the line
+    const xValues = d3.range(0, 20.1, 0.2);
+    
+    // Remove existing lines if they exist
+    removeExistingLines();
+    
+    // Create confidence interval area
+    ciArea = g.append("path")
+        .datum(xValues)
+        .attr("fill", "rgba(46, 204, 113, 0.3)")
+        .attr("stroke", "none");
+    
+    // Create prediction interval area
+    piArea = g.append("path")
+        .datum(xValues)
+        .attr("fill", "rgba(0, 0, 0, 0.15)")
+        .attr("stroke", "none");
+    
+    // Create regression line
+    regressionLine = g.append("path")
+        .datum(xValues)
+        .attr("fill", "none")
+        .attr("stroke", "steelblue")
+        .attr("stroke-width", 3);
+    
+    // Animate the drawing
+    const totalDuration = 1500;
+    const segmentCount = xValues.length;
+    
+    // Animate prediction interval first (slowest)
+    const piLine = d3.area()
+        .x(d => x(d))
+        .y0(d => {
+            const yHat = b0 + b1 * d;
+            const se = s * Math.sqrt(1 + 1/n + Math.pow(d - xBar, 2) / Sxx);
+            return y(yHat - 1.96 * se);
+        })
+        .y1(d => {
+            const yHat = b0 + b1 * d;
+            const se = s * Math.sqrt(1 + 1/n + Math.pow(d - xBar, 2) / Sxx);
+            return y(yHat + 1.96 * se);
+        });
+    
+    // Animate confidence interval next
+    const ciLine = d3.area()
+        .x(d => x(d))
+        .y0(d => {
+            const yHat = b0 + b1 * d;
+            const se = s * Math.sqrt(1/n + Math.pow(d - xBar, 2) / Sxx);
+            return y(yHat - 1.96 * se);
+        })
+        .y1(d => {
+            const yHat = b0 + b1 * d;
+            const se = s * Math.sqrt(1/n + Math.pow(d - xBar, 2) / Sxx);
+            return y(yHat + 1.96 * se);
+        });
+    
+    // Animate regression line last
+    const line = d3.line()
+        .x(d => x(d))
+        .y(d => y(b0 + b1 * d));
+    
+    // Animation sequence
+    piArea
+        .transition()
+        .duration(totalDuration * 0.4)
+        .attrTween("d", function(d) {
+            const interpolator = d3.interpolate("M0,0", piLine(d));
+            return t => interpolator(t);
+        });
+    
+    ciArea
+        .transition()
+        .delay(totalDuration * 0.4)
+        .duration(totalDuration * 0.4)
+        .attrTween("d", function(d) {
+            const interpolator = d3.interpolate("M0,0", ciLine(d));
+            return t => interpolator(t);
+        });
+    
+    regressionLine
+        .transition()
+        .delay(totalDuration * 0.8)
+        .duration(totalDuration * 0.2)
+        .attrTween("d", function(d) {
+            const interpolator = d3.interpolate("M0,0", line(d));
+            return t => interpolator(t);
+        });
+}
+
+function removeExistingLines() {
+    if (regressionLine) regressionLine.remove();
+    if (ciArea) ciArea.remove();
+    if (piArea) piArea.remove();
+}
+
+// Control functions
+function addRandomPoint() {
+    const xVal = Math.random() * 18 + 1;
+    const yVal = Math.random() * 180 + 10;
+    addPoint(xVal, yVal);
+}
+
+function addLinearPoints() {
+    const slope = 5 + Math.random() * 3;
+    const intercept = 20 + Math.random() * 50;
+    
+    for (let i = 0; i < 10; i++) {
+        const xVal = i * 1.8 + 1;
+        const yVal = intercept + slope * xVal + (Math.random() * 20 - 10);
+        addPoint(xVal, yVal);
+    }
+}
+
+function addNoisyPoints() {
+    const baseY = 100;
+    
+    for (let i = 0; i < 10; i++) {
+        const xVal = i * 1.8 + 1;
+        const yVal = baseY + (Math.random() * 100 - 50);
+        addPoint(xVal, yVal);
+    }
+}
+
+function clearAll() {
+    data = [];
+    
+    // Remove all points
+    if (pointsGroup) {
+        pointsGroup.remove();
+        pointsGroup = null;
+    }
+    
+    // Remove regression lines
+    removeExistingLines();
+    
+    // Reset calculation display
+    d3.select("#calc-output").html("Add at least 2 points to see calculations...");
+    
+    // Re-add instruction text if needed
+    g.selectAll("text.instruction").remove();
+    g.append("text")
+        .attr("class", "instruction")
+        .attr("x", innerWidth / 2)
+        .attr("y", innerHeight / 2)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#666")
+        .text("Click on the chart or use buttons to add points");
+}
+</script>
+</body>
+</html>
